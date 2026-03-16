@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Temperatura - Open-Meteo</title>
+  <link rel="stylesheet" href="/src/styles/main.css">
+</head>
+<body>
+  <main id="app">
+    <h1>Buscar temperatura</h1>
+    <form id="search-form">
+      <input type="text" id="city-input" placeholder="Escribe una ciudad" required>
+      <button type="submit">Buscar</button>
+    </form>
+
+    <div id="status" aria-live="polite"></div>
+    <div id="result"></div>
+    </main>
+    
+    <script type="module" src="/src/index.js"></script>
+    </body>
+    </html>
