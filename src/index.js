@@ -3,9 +3,40 @@ const cityInput = document.getElementById('city-input');
 const statusEl = document.getElementById('status');
 const resultEl = document.getElementById('result');
 
+
+const CACHE_DURATION = 60 * 60 * 1000; // 1 hora en milisegundos
+
+// Obtener datos desde caché
+function getCache(key) {
+  const cached = localStorage.getItem(key);
+  if (!cached) return null;
+
+  const parsed = JSON.parse(cached);
+
+  const now = Date.now();
+
+  // Verifica si aún es válido
+  if (now - parsed.timestamp < CACHE_DURATION) {
+    return parsed.data;
+  }
+
+  // Si expiró, lo eliminamos
+  localStorage.removeItem(key);
+  return null;
+}
+
+// Guardar datos en caché
+function setCache(key, data) {
+  const cacheData = {
+    data,
+    timestamp: Date.now()
+  };
+  localStorage.setItem(key, JSON.stringify(cacheData));
+}
+
 // Función para obtener coordenadas usando el geocoding de Open-Meteo
 async function geocodeCity(city) {
-  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1`;
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation&timezone=auto`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('Error en geocoding');
   const data = await res.json();
@@ -20,17 +51,37 @@ async function geocodeCity(city) {
 
 // Función para obtener el clima (temperatura actual) desde Open-Meteo
 async function fetchTemperature(lat, lon) {
-  // Pedimos la temperatura actual (temperature_2m) usando el endpoint de forecast
+  const cacheKey = `weather_${lat}_${lon}`;
+
+  // 1. Revisar caché
+  const cachedData = getCache(cacheKey);
+  if (cachedData) {
+    console.log('Usando datos en caché');
+    return cachedData;
+  }
+
+  // 2. Llamar a la API si no hay caché
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&temperature_unit=celsius`;
+
   const res = await fetch(url);
   if (!res.ok) throw new Error('Error al obtener datos meteorológicos');
+
   const data = await res.json();
   if (!data || !data.current_weather) throw new Error('Datos meteorológicos no disponibles');
-  // Devolvemos temperatura y weathercode
-  return {
-    temperature: data.current_weather.temperature,
-    weathercode: data.current_weather.weathercode
-  };
+
+  const current = data.current;
+
+return {
+  temperature: current.temperature_2m,
+  humidity: current.relative_humidity_2m,
+  wind: current.wind_speed_10m,
+  precipitation: current.precipitation
+};
+
+  // 3. Guardar en caché
+  setCache(cacheKey, result);
+
+  return result;
 }
 
 function setStatus(message) {
@@ -60,14 +111,36 @@ function weatherIconSvg(code) {
   return `<svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="6" fill="#B0BEC5"/></svg>`;
 }
 
-function showResult(cityName, country, temperature, weathercode) {
-  const icon = weatherIconSvg(weathercode);
-  resultEl.innerHTML = `<div class="weather"><div class="icon">${icon}</div><div class="info"><h2>${cityName}, ${country}</h2><p>Temperatura actual: <strong>${temperature}°C</strong></p></div></div>`;
+function showResult(cityName, country, weather) {
+  resultEl.innerHTML = `
+    <div class="weather">
+      <h2>${cityName}, ${country}</h2>
+      <p>🌡️ Temperatura: <strong>${weather.temperature}°C</strong></p>
+      <p>💧 Humedad: ${weather.humidity}%</p>
+      <p>💨 Viento: ${weather.wind} km/h</p>
+      <p>🌧️ Precipitación: ${weather.precipitation} mm</p>
+    </div>
+  `;
 }
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const city = cityInput.value.trim();
+  const input = cityInput.value.trim();
+if (!input) return;
+
+setStatus('Buscando ciudades...');
+resultEl.innerHTML = '';
+
+try {
+  const results = await fetchMultipleCitiesWeather(input);
+
+  setStatus('');
+  showComparison(results);
+
+} catch (err) {
+  console.error(err);
+  setStatus('Error al obtener datos.');
+}
   if (!city) return;
 
   setStatus('Buscando ubicación...');
@@ -82,11 +155,113 @@ form.addEventListener('submit', async (e) => {
 
     setStatus(`Obteniendo clima para ${place.name}, ${place.country}...`);
     const data = await fetchTemperature(place.lat, place.lon);
+    const forecast = await fetchForecast(place.lat, place.lon);
 
     setStatus('');
     showResult(place.name, place.country, data.temperature, data.weathercode);
+    showForecast(forecast);
   } catch (err) {
     console.error(err);
     setStatus('Ocurrió un error al obtener la temperatura.');
   }
 });
+
+async function fetchForecast(lat, lon) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min&timezone=auto`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Error al obtener pronóstico');
+
+  const data = await res.json();
+
+  if (!data || !data.daily) throw new Error('Pronóstico no disponible');
+
+  // Tomamos solo 5 días
+  const forecast = data.daily.time.slice(0, 5).map((date, i) => ({
+    date,
+    max: data.daily.temperature_2m_max[i],
+    min: data.daily.temperature_2m_min[i]
+  }));
+
+  return forecast;
+}
+
+function showForecast(forecast) {
+  const html = forecast.map(day => `
+    <div class="forecast-day">
+      <p><strong>${day.date}</strong></p>
+      <p>🌡️ Máx: ${day.max}°C</p>
+      <p>❄️ Mín: ${day.min}°C</p>
+    </div>
+  `).join('');
+
+  resultEl.innerHTML += `
+    <div class="forecast">
+      <h3>Pronóstico 5 días</h3>
+      ${html}
+    </div>
+  `;
+}
+
+async function fetchMultipleCitiesWeather(citiesInput) {
+  const cities = citiesInput.split(',').map(c => c.trim());
+
+  const results = [];
+
+  for (const city of cities) {
+    try {
+      const place = await geocodeCity(city);
+
+      if (!place) {
+        results.push({
+          city,
+          error: 'No encontrada'
+        });
+        continue;
+      }
+
+      const weather = await fetchTemperature(place.lat, place.lon);
+
+      results.push({
+        city: place.name,
+        country: place.country,
+        temperature: weather.temperature
+      });
+
+    } catch (error) {
+      results.push({
+        city,
+        error: 'Error al obtener datos'
+      });
+    }
+  }
+
+  return results;
+}
+
+function showComparison(results) {
+  const html = results.map(item => {
+    if (item.error) {
+      return `
+        <div class="city-card">
+          <h3>${item.city}</h3>
+          <p>❌ ${item.error}</p>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="city-card">
+        <h3>${item.city}, ${item.country}</h3>
+        <p>🌡️ ${item.temperature}°C</p>
+      </div>
+    `;
+  }).join('');
+
+  resultEl.innerHTML = `
+    <div class="comparison">
+      <h2>Comparación de ciudades</h2>
+      ${html}
+    </div>
+  `;
+}
